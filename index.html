@@ -3148,6 +3148,77 @@ function importFullBackup(input) {
   reader.readAsText(file);
 }
 
+// ═══════════════════════════════════════════
+//  CHARGEMENT AUTOMATIQUE D'UN data.json DISTANT
+//  (placé à côté de index.html sur le serveur / GitHub Pages)
+// ═══════════════════════════════════════════
+// Applique un objet backup (même format que la sauvegarde .json), sans confirmation.
+function applyBackupObject(backup) {
+  if (!backup || backup._format !== 'maintenance-dashboard-backup') return false;
+  let monthCount = 0, idCount = 0;
+  if (backup.months) {
+    Object.keys(MONTH_REGISTRY).forEach(key => {
+      if (!MONTH_REGISTRY[key].isBuiltIn) delete MONTH_REGISTRY[key];
+    });
+    Object.entries(backup.months).forEach(([key, entry]) => {
+      MONTH_REGISTRY[key] = { ...entry, isBuiltIn: false };
+      monthCount++;
+    });
+  }
+  if (backup.vendors) {
+    Object.entries(backup.vendors).forEach(([key, data]) => { VENDOR_REGISTRY[key] = data; });
+  }
+  if (backup.identities) {
+    Object.entries(backup.identities).forEach(([code, id]) => { IDENTITY_REGISTRY[code] = id; idCount++; });
+  }
+  if (backup.currentRefKey && MONTH_REGISTRY[backup.currentRefKey]) currentRefKey = backup.currentRefKey;
+  if (typeof backup.alertThreshold === 'number') alertThreshold = backup.alertThreshold;
+  if (backup.lang) { currentLang = backup.lang; try{localStorage.setItem('dashboard_lang', backup.lang);}catch(e){} }
+
+  // Re-render tout
+  refreshDataPage();
+  refreshRefPeriodSelector();
+  refreshStoresPeriodSelector();
+  refreshOverviewPeriodSelector();
+  refreshVendorPeriodSelector();
+  rebuildTop20();
+  filteredStores = [...(MONTH_REGISTRY[currentRefKey]?.stores || STORES)].sort((a,b)=>b.total_actual-a.total_actual);
+  renderStoresTable();
+  renderOverview();
+  renderVendors();
+  renderAllRefPages();
+  initIdentitiesPage();
+  applyI18n();
+  checkCompare();
+  updateStorageInfo();
+  return { monthCount, idCount, exportedAt: backup._exportedAt };
+}
+
+// Essaie de charger data.json à côté de la page. Silencieux si absent.
+async function loadRemoteData() {
+  // Ne fonctionne que servi en http(s) — pas en file:// (le navigateur bloque fetch local)
+  if (!/^https?:/.test(location.protocol)) return;
+  try {
+    // cache-bust pour que la dernière version soit toujours prise
+    const url = 'data.json?v=' + Date.now();
+    const resp = await fetch(url, { cache: 'no-store' });
+    if (!resp.ok) return; // 404 = pas de data.json, on garde les mois intégrés
+    const backup = await resp.json();
+    const res = applyBackupObject(backup);
+    if (res) {
+      const info = document.getElementById('backup-info');
+      if (info) {
+        const when = res.exportedAt ? new Date(res.exportedAt).toLocaleString('fr-FR') : '—';
+        info.innerHTML = `<span style="color:var(--green)">☁ Données partagées chargées depuis data.json : ${res.monthCount} mois${res.idCount?` · ${res.idCount} identités`:''} (mis à jour le ${when})</span>`;
+      }
+      showToast(`☁ data.json chargé : ${res.monthCount} mois`, 3000);
+    }
+  } catch(e) {
+    // JSON invalide ou réseau — on ignore et on garde les données intégrées
+    console.warn('loadRemoteData:', e.message);
+  }
+}
+
 let lastPersistWarning = '';
 
 // ═══════════════════════════════════════════
@@ -4478,6 +4549,10 @@ updateAlertBanner();
 applyI18n();
 updateDirtyIndicator();
 setTimeout(updateStorageInfo, 500);
+
+// Chargement automatique d'un data.json partagé (GitHub Pages / serveur).
+// Silencieux en local (file://) ou si le fichier est absent : on garde les 7 mois intégrés.
+loadRemoteData();
 </script>
 </body>
 </html>
