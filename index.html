@@ -1008,13 +1008,14 @@ body{font-family:'Syne',sans-serif;background:var(--bg);color:var(--text);min-he
       <button class="modal-close" onclick="closeModal()">✕</button>
     </div>
     <div class="modal-kpis">
-      <div class="mkpi"><div class="mkpi-val" id="m-actual">–</div><div class="mkpi-lbl">Coût réel</div></div>
+      <div class="mkpi" id="m-actual-tile" style="cursor:pointer" title="Voir toutes les transactions"><div class="mkpi-val" id="m-actual">–</div><div class="mkpi-lbl">Coût réel ▾</div></div>
       <div class="mkpi"><div class="mkpi-val" id="m-budget">–</div><div class="mkpi-lbl">Budget</div></div>
       <div class="mkpi"><div class="mkpi-val" id="m-variance">–</div><div class="mkpi-lbl">Variance</div></div>
     </div>
     <div id="m-risk-bar" style="margin-bottom:16px"></div>
-    <div class="modal-sec">Détail par catégorie</div>
+    <div class="modal-sec">Détail par catégorie <small style="font-weight:400;color:var(--text-dim)">— cliquer une ligne pour les transactions</small></div>
     <div id="m-cats"></div>
+    <div id="m-tx-detail" style="display:none"></div>
     <div id="m-compare"></div>
   </div>
 </div>
@@ -1552,6 +1553,8 @@ function refreshStoresPeriodSelector() {
 let storesRangeActive = false;   // true quand une plage Du→Au est appliquée
 let rangeStoresCache = null;     // tableau de magasins agrégés sur la plage
 let rangeLabel = '';             // libellé "Mars → Juillet 2026"
+let rangeKeys = [];              // clés des mois de la plage active
+let modalPeriodKeys = [];        // mois affichés par la modale détail ouverte
 
 // Agrège les coûts de plusieurs mois par magasin (somme des catégories + totaux)
 function buildRangeStores(keys) {
@@ -1621,6 +1624,7 @@ function applyStoresRange() {
   if (!keys.length) { alert('Aucun mois disponible dans cette période.'); return; }
 
   rangeStoresCache = buildRangeStores(keys);
+  rangeKeys = keys.slice();
   storesRangeActive = true;
   multiMonthMode = false;
   document.getElementById('stores-single-view').style.display = 'block';
@@ -2333,7 +2337,7 @@ function openModal(code, periodKey) {
   // Cas spécial : période cumulée (plage de mois)
   if (periodKey === '__range__' && rangeStoresCache) {
     const sr = rangeStoresCache.find(x=>x.code===code);
-    if (sr) { openModalFromStore(sr, rangeLabel || 'Période cumulée'); return; }
+    if (sr) { modalPeriodKeys = rangeKeys.slice(); openModalFromStore(sr, rangeLabel || 'Période cumulée'); return; }
   }
   // Use the passed period, or fall back to the stores page period, or reference
   const pk = periodKey || storesPeriodKey || currentRefKey;
@@ -2341,7 +2345,84 @@ function openModal(code, periodKey) {
   const storeList = entry ? entry.stores : STORES;
   const s = storeList.find(x=>x.code===code) || STORES.find(x=>x.code===code);
   if(!s) return;
+  modalPeriodKeys = MONTH_REGISTRY[pk] ? [pk] : Object.keys(MONTH_REGISTRY);
   openModalFromStore(s, entry ? entry.label : 'Mars 2026');
+}
+
+// Récupère les transactions DATA FR d'un magasin (description = col P, montant = col R)
+// sur les mois actifs de la modale, éventuellement filtrées par catégorie.
+function getStoreTransactions(code, categoryName) {
+  const keys = (modalPeriodKeys && modalPeriodKeys.length) ? modalPeriodKeys : [storesPeriodKey];
+  const out = [];
+  keys.forEach(k => {
+    const vr = VENDOR_REGISTRY[k];
+    const txs = vr && vr.transactions ? vr.transactions : [];
+    txs.forEach(t => {
+      if (t.store !== code) return;
+      if (categoryName && t.category !== categoryName) return;
+      out.push({
+        period: MONTH_REGISTRY[k] ? MONTH_REGISTRY[k].label : k,
+        description: t.description || '',
+        amount: +t.amount || 0,
+        company: t.company || '',
+        category: t.category || '',
+        vendor_code: t.vendor_code || ''
+      });
+    });
+  });
+  return out.sort((a,b) => b.amount - a.amount);
+}
+
+// Affiche le détail des transactions (desc + montant) sous la modale magasin
+function showStoreTxDetail(code, categoryName) {
+  const panel = document.getElementById('m-tx-detail');
+  if (!panel) return;
+  const txs = getStoreTransactions(code, categoryName);
+  const title = categoryName ? `Transactions — ${categoryName}` : 'Toutes les transactions';
+  const multi = (modalPeriodKeys && modalPeriodKeys.length > 1);
+  if (!txs.length) {
+    panel.innerHTML = `<div style="margin-top:14px;padding:12px 14px;background:var(--surface2,#f4f6f9);border-radius:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <strong style="font-size:13px">${title}</strong>
+        <button onclick="hideStoreTxDetail()" style="border:none;background:none;cursor:pointer;color:var(--text-dim);font-size:13px">✕ fermer</button></div>
+      <div style="font-size:12px;color:var(--text-muted)">Aucune transaction enregistrée dans « DATA FR » pour ce magasin${categoryName?` et cette catégorie`:''} sur la période.</div></div>`;
+    panel.style.display = 'block';
+    panel.scrollIntoView({behavior:'smooth', block:'nearest'});
+    return;
+  }
+  const total = txs.reduce((s,t)=>s+t.amount,0);
+  const rows = txs.map(t => `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:6px 8px;font-size:12px">${t.description || '<span style="color:var(--text-dim)">(sans libellé)</span>'}</td>
+      ${multi?`<td style="padding:6px 8px;font-size:11px;color:var(--text-dim);white-space:nowrap">${t.period}</td>`:''}
+      <td style="padding:6px 8px;font-size:12px;color:var(--text-muted);white-space:nowrap">${t.company}</td>
+      <td style="padding:6px 8px;font-size:12px;text-align:right;font-family:'DM Mono',monospace;white-space:nowrap">${fmtE(t.amount)}</td>
+    </tr>`).join('');
+  panel.innerHTML = `<div style="margin-top:14px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:var(--accent-light,rgba(37,99,235,.08))">
+      <strong style="font-size:13px;color:var(--accent)">${title}</strong>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:12px;color:var(--text-muted)">${txs.length} ligne${txs.length>1?'s':''} · total ${fmtE(total)}</span>
+        <button onclick="hideStoreTxDetail()" style="border:none;background:none;cursor:pointer;color:var(--text-dim);font-size:13px">✕ fermer</button>
+      </div>
+    </div>
+    <div style="max-height:260px;overflow-y:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2,#f4f6f9)">
+          <th style="padding:6px 8px;text-align:left;font-size:10px;text-transform:uppercase;color:var(--text-dim);letter-spacing:.4px">Description (col. P)</th>
+          ${multi?`<th style="padding:6px 8px;text-align:left;font-size:10px;text-transform:uppercase;color:var(--text-dim)">Mois</th>`:''}
+          <th style="padding:6px 8px;text-align:left;font-size:10px;text-transform:uppercase;color:var(--text-dim)">Fournisseur</th>
+          <th style="padding:6px 8px;text-align:right;font-size:10px;text-transform:uppercase;color:var(--text-dim)">Montant (col. R)</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div></div>`;
+  panel.style.display = 'block';
+  panel.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+function hideStoreTxDetail() {
+  const panel = document.getElementById('m-tx-detail');
+  if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
 }
 
 function openModalFromStore(s, periodLabel) {
@@ -2372,12 +2453,16 @@ function openModalFromStore(s, periodLabel) {
     const act=s[c.key+'_actual'], bud=s[c.key+'_budget'];
     const wA=maxCat>0?(act/maxCat*100).toFixed(1):0, wB=maxCat>0?(bud/maxCat*100).toFixed(1):0;
     const vp=bud>0?((act-bud)/bud*100).toFixed(1):0;
-    ce.innerHTML+=`<div class="mcat-row"><div class="mcat-lbl">${c.name}</div>
+    ce.innerHTML+=`<div class="mcat-row" style="cursor:pointer" title="Voir les transactions ${c.name}" onclick="showStoreTxDetail('${code}', ${JSON.stringify(c.name)})"><div class="mcat-lbl">${c.name}</div>
       <div class="mcat-track"><div style="position:absolute;top:0;left:0;width:${wB}%;height:100%;background:#e2e6ed;border-radius:4px"></div><div class="mcat-fill" style="width:${wA}%;background:${c.color}"></div></div>
       <div class="mcat-val" style="color:${c.color}">${fmtE(act)}</div>
       <div class="mcat-pct" style="color:${act>bud?'var(--red)':'var(--green)'}">${vp>0?'+':''}${vp}%</div>
     </div>`;
   });
+  // Tuile "Coût réel" → toutes les transactions ; réinitialise le panneau
+  const atile=document.getElementById('m-actual-tile');
+  if(atile) atile.onclick=()=>showStoreTxDetail(code, null);
+  const txd=document.getElementById('m-tx-detail'); if(txd){ txd.style.display='none'; txd.innerHTML=''; }
   // Compare — show evolution across all loaded months for this store
   const cmp=document.getElementById('m-compare'); cmp.innerHTML='';
   const allMonths = getSortedMonths();
